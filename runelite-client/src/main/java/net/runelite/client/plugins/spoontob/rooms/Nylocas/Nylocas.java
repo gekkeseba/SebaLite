@@ -13,7 +13,6 @@ import java.util.Set;
 import javax.inject.Inject;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
-import net.runelite.api.GameObject;
 import net.runelite.api.GameState;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;

@@ -23,7 +23,6 @@ import net.runelite.api.NPC;
 import net.runelite.api.Player;
 import net.runelite.api.PlayerComposition;
 import net.runelite.api.Projectile;
-import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.ClientTick;

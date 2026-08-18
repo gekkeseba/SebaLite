@@ -17,7 +17,6 @@ import javax.sound.sampled.Clip;
 import javax.sound.sampled.DataLine;
 import javax.sound.sampled.FloatControl;
 import net.runelite.api.Client;
-import net.runelite.api.GameObject;
 import net.runelite.api.GameState;
 import net.runelite.api.GraphicsObject;
 import net.runelite.api.NPC;
