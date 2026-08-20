@@ -7,7 +7,6 @@ import java.io.BufferedInputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Random;
 import java.util.Set;
 import javax.inject.Inject;
@@ -36,12 +35,11 @@ import net.runelite.api.Prayer;
 import net.runelite.api.Scene;
 import net.runelite.api.ScriptID;
 import net.runelite.api.Tile;
+import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
-import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.AnimationChanged;
 import net.runelite.api.events.ChatMessage;
-import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameObjectDespawned;
 import net.runelite.api.events.GameObjectSpawned;
 import net.runelite.api.events.GameStateChanged;
@@ -80,19 +78,28 @@ import net.runelite.client.util.Text;
 )
 public class SpoonNightmarePlugin extends Plugin
 {
-	// The base "Protect from X" prayers exist in every prayer book, but RuneLite no longer exposes
-	// fixed widget constants for them - since prayer tab slots became reorderable, positions are
-	// dynamic. This resolves the current on-screen widget for a given prayer the same way the
-	// vanilla prayer-reorder plugin (PrayerReorder.java) does: match the prayer's item name within
-	// the currently-unlocked prayer book enum, then read its widget component via OC_PRAYER_COMPONENT.
-	private static final String PRAYER_NAME_MAGIC = "Protect from Magic";
-	private static final String PRAYER_NAME_MISSILES = "Protect from Missiles";
-	private static final String PRAYER_NAME_MELEE = "Protect from Melee";
+	// The three protection prayers keep a fixed slot in the prayer book widget tree (group 541,
+	// same as InterfaceID.PRAYERBOOK) regardless of any player-customized prayer reordering -
+	// confirmed against a currently-maintained Nightmare plugin (OreoCupcakes/kotori-plugins) that
+	// resolves these the same way. This is far more reliable than resolving prayers dynamically
+	// through the prayer-book enum (which only reliably works for other, non-anchored prayers).
+	private static final int PRAYER_GROUP_ID = InterfaceID.PRAYERBOOK;
+	private static final int PRAYER_CHILD_MAGIC = 21;
+	private static final int PRAYER_CHILD_MISSILES = 22;
+	private static final int PRAYER_CHILD_MELEE = 23;
 
 	// Prayer icon sprite IDs, matching NightmareAttack's sprite/childId scheme.
 	private static final int SPRITE_MAGIC = 127;
 	private static final int SPRITE_MISSILES = 128;
 	private static final int SPRITE_MELEE = 129;
+
+	// Arena tiles where Phosani's Nightmare / The Nightmare come to rest between attacks - used to
+	// distinguish her "charge" animation's routine mid-arena use from a genuine Surge special
+	// (she teleports to one of the four edges, then dashes across to the opposite side). Verified
+	// against the same reference plugin, which shares this arena with both boss variants.
+	private static final LocalPoint NIGHTMARE_MIDDLE_LOCATION = new LocalPoint(6208, 8128, WorldView.TOPLEVEL);
+	private static final Set<LocalPoint> PHOSANI_MIDDLE_LOCATIONS = ImmutableSet.of(
+		new LocalPoint(6208, 7104, WorldView.TOPLEVEL), new LocalPoint(7232, 7104, WorldView.TOPLEVEL));
 
 	// Sound effects for the black hands spawning - no gameval SoundEffectID constant exists for these.
 	private static final Set<Integer> HAND_SPAWN_SOUND_IDS = ImmutableSet.of(4307, 4274, 4228, 4322);
@@ -133,12 +140,10 @@ public class SpoonNightmarePlugin extends Plugin
 	private String correctPray = "";
 	private boolean cursePhase;
 	private boolean impregnated;
-	private WorldPoint bossLoc;
 	private int parasiteTicks;
 	private boolean preggers;
 	private final ArrayList<NPC> parasiteList = new ArrayList<>();
-	private boolean preparedForTakeoff = false;
-	private int flightTime = 5;
+	private boolean nightmareCharging = false;
 	private final ArrayList<Color> raveRunway = new ArrayList<>();
 	private boolean totemsActive = false;
 	private final ArrayList<TotemInfo> totemList = new ArrayList<>();
@@ -230,8 +235,7 @@ public class SpoonNightmarePlugin extends Plugin
 		this.correctPray = "";
 		this.cursePhase = false;
 		this.impregnated = false;
-		this.preparedForTakeoff = false;
-		this.flightTime = 5;
+		this.nightmareCharging = false;
 		this.raveRunway.clear();
 		this.totemsActive = false;
 		this.totemList.clear();
@@ -502,6 +506,12 @@ public class SpoonNightmarePlugin extends Plugin
 
 	private void applyAttackAnimation(int npcId, int npcAnimId)
 	{
+		// The "charging" telegraph (NIGHTMARE_RESPAWN) only lasts until her next animation - once
+		// she moves on to anything else, whatever she was charging (Surge or otherwise) is resolved.
+		if (this.nightmareCharging && npcAnimId != AnimationID.NIGHTMARE_RESPAWN)
+		{
+			this.nightmareCharging = false;
+		}
 		if (npcAnimId == AnimationID.NIGHTMARE_ATTACK_MELEE)
 		{
 			this.ticksUntilAttack = 7;
@@ -569,30 +579,18 @@ public class SpoonNightmarePlugin extends Plugin
 
 	private void applyRespawnAnimation(int npcId)
 	{
-		boolean baseTakeoff = npcId == NpcID.NIGHTMARE_PHASE_03 || npcId == NpcID.NIGHTMARE_WEAK_PHASE_03;
-		boolean phosaniTakeoff = (npcId >= NpcID.NIGHTMARE_CHALLENGE_PHASE_01 && npcId <= NpcID.NIGHTMARE_CHALLENGE_DYING)
-			|| (npcId >= NpcID.NIGHTMARE_CHALLENGE_PHASE_04 && npcId <= NpcID.NIGHTMARE_CHALLENGE_WEAK_PHASE_04);
-		if (baseTakeoff)
+		// NIGHTMARE_RESPAWN ("charge") fires for several different charge-ups, not just Surge - the
+		// only reliable way to tell them apart is whether she's standing at the arena's resting spot
+		// (routine charge) or off at one of its edges (Surge: she teleports to an edge, then dashes
+		// across to the opposite side). Verified against a currently-maintained reference plugin.
+		this.ticksUntilAttack = 10;
+		this.eventTicks = 5;
+		LocalPoint loc = this.nightmareNpc.getLocalLocation();
+		boolean atRestingSpot = isPhosaniVariant(npcId) ? PHOSANI_MIDDLE_LOCATIONS.contains(loc) : NIGHTMARE_MIDDLE_LOCATION.equals(loc);
+		if (!atRestingSpot)
 		{
-			this.ticksUntilAttack = 10;
-			this.eventTicks = 5;
-			this.preparedForTakeoff = true;
+			this.nightmareCharging = true;
 			playA10Strafe();
-		}
-		else if (phosaniTakeoff)
-		{
-			this.ticksUntilAttack = 10;
-			this.eventTicks = 5;
-			WorldPoint loc = this.nightmareNpc.getWorldLocation();
-			if (loc.getRegionX() != 46 || loc.getRegionY() != 45)
-			{
-				this.preparedForTakeoff = true;
-				playA10Strafe();
-			}
-		}
-		else
-		{
-			this.ticksUntilAttack = 14;
 		}
 	}
 
@@ -602,27 +600,6 @@ public class SpoonNightmarePlugin extends Plugin
 		{
 			this.clip.setFramePosition(0);
 			this.clip.start();
-		}
-	}
-
-	@Subscribe
-	public void onClientTick(ClientTick event)
-	{
-		if (!this.client.isInInstancedRegion())
-		{
-			return;
-		}
-		List<NPC> npcs = this.client.getNpcs();
-		for (NPC n : npcs)
-		{
-			if (n == null || n.getName() == null)
-			{
-				continue;
-			}
-			if (n.getName().equalsIgnoreCase("the nightmare") || n.getName().equalsIgnoreCase("phosani's nightmare"))
-			{
-				this.bossLoc = n.getWorldLocation();
-			}
 		}
 	}
 
@@ -702,15 +679,6 @@ public class SpoonNightmarePlugin extends Plugin
 		if (this.preggers)
 		{
 			this.parasiteTicks--;
-		}
-		if (this.preparedForTakeoff)
-		{
-			this.flightTime--;
-			if (this.flightTime == 0)
-			{
-				this.preparedForTakeoff = false;
-				this.flightTime = 5;
-			}
 		}
 		if (this.mushroomActive)
 		{
@@ -958,8 +926,13 @@ public class SpoonNightmarePlugin extends Plugin
 
 	private boolean isNightmareId(int npcId)
 	{
-		return (npcId >= NpcID.NIGHTMARE_PHASE_01 && npcId <= NpcID.NIGHTMARE_DYING)
-			|| (npcId >= NpcID.NIGHTMARE_CHALLENGE_PHASE_01 && npcId <= NpcID.NIGHTMARE_CHALLENGE_DYING)
+		return (npcId >= NpcID.NIGHTMARE_PHASE_01 && npcId <= NpcID.NIGHTMARE_DYING) || isPhosaniVariant(npcId);
+	}
+
+	// Confirmed against a currently-maintained reference plugin using the same ID ranges.
+	static boolean isPhosaniVariant(int npcId)
+	{
+		return (npcId >= NpcID.NIGHTMARE_CHALLENGE_PHASE_01 && npcId <= NpcID.NIGHTMARE_CHALLENGE_DYING)
 			|| (npcId >= NpcID.NIGHTMARE_CHALLENGE_PHASE_04 && npcId <= NpcID.NIGHTMARE_CHALLENGE_WEAK_PHASE_04);
 	}
 
@@ -1038,35 +1011,24 @@ public class SpoonNightmarePlugin extends Plugin
 
 	Widget getPrayerWidget(Prayer prayer)
 	{
-		String targetName;
+		int childId;
 		if (prayer == Prayer.PROTECT_FROM_MAGIC)
 		{
-			targetName = PRAYER_NAME_MAGIC;
+			childId = PRAYER_CHILD_MAGIC;
 		}
 		else if (prayer == Prayer.PROTECT_FROM_MISSILES)
 		{
-			targetName = PRAYER_NAME_MISSILES;
+			childId = PRAYER_CHILD_MISSILES;
 		}
 		else if (prayer == Prayer.PROTECT_FROM_MELEE)
 		{
-			targetName = PRAYER_NAME_MELEE;
+			childId = PRAYER_CHILD_MELEE;
 		}
 		else
 		{
 			return null;
 		}
-		int prayerbook = this.client.getVarbitValue(VarbitID.PRAYERBOOK);
-		EnumComposition prayers = getPrayerBookEnum(prayerbook);
-		for (int key : prayers.getKeys())
-		{
-			int prayerObjId = prayers.getIntValue(key);
-			ItemComposition itemComp = this.client.getItemDefinition(prayerObjId);
-			if (targetName.equalsIgnoreCase(itemComp.getName()))
-			{
-				return this.client.getWidget(itemComp.getIntValue(ParamID.OC_PRAYER_COMPONENT));
-			}
-		}
-		return null;
+		return this.client.getWidget(PRAYER_GROUP_ID, childId);
 	}
 
 	private void applyPrayerHiding(boolean hide)
@@ -1281,9 +1243,9 @@ public class SpoonNightmarePlugin extends Plugin
 		return this.handsLocation;
 	}
 
-	public boolean isPreparedForTakeoff()
+	public boolean isNightmareCharging()
 	{
-		return this.preparedForTakeoff;
+		return this.nightmareCharging;
 	}
 
 	public boolean isTotemsActive()
@@ -1319,11 +1281,6 @@ public class SpoonNightmarePlugin extends Plugin
 	public int getHandsDelay()
 	{
 		return this.handsDelay;
-	}
-
-	public WorldPoint getBossLoc()
-	{
-		return this.bossLoc;
 	}
 
 	public ArrayList<Color> getRaveRunway()

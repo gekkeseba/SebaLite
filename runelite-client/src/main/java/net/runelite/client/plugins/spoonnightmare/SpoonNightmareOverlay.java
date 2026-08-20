@@ -7,6 +7,8 @@ import java.awt.Font;
 import java.awt.Graphics2D;
 import java.awt.Polygon;
 import java.awt.Shape;
+import java.awt.geom.Area;
+import java.awt.geom.GeneralPath;
 import java.util.ArrayList;
 import javax.inject.Inject;
 import net.runelite.api.Client;
@@ -21,6 +23,7 @@ import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.NpcID;
 import net.runelite.api.gameval.SpotanimID;
+import net.runelite.api.geometry.Geometry;
 import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayLayer;
 import net.runelite.client.ui.overlay.OverlayPosition;
@@ -53,7 +56,7 @@ public class SpoonNightmareOverlay extends Overlay
 		{
 			renderHands(graphics);
 		}
-		if (this.config.p3Runway() != SpoonNightmareConfig.runwayMode.OFF && this.plugin.isPreparedForTakeoff())
+		if (this.config.p3Runway() != SpoonNightmareConfig.runwayMode.OFF && this.plugin.isNightmareCharging())
 		{
 			renderRunway(graphics);
 		}
@@ -143,83 +146,88 @@ public class SpoonNightmareOverlay extends Overlay
 		}
 	}
 
+	// Surge teleports Phosani's Nightmare / The Nightmare to one of the four arena edges, then dashes
+	// her straight across to the opposite side. Her resting-position coordinates only ever land on a
+	// handful of known values per edge, so the dash lane is derived directly from those absolute
+	// local-point coordinates rather than her (unreliable, still-settling-mid-turn) orientation.
+	// Verified against a currently-maintained reference plugin that shares this same arena.
 	private void renderRunway(Graphics2D graphics)
 	{
-		WorldPoint bossLoc = this.plugin.getBossLoc();
-		if (bossLoc == null)
+		NPC nm = this.plugin.getNightmareNpc();
+		if (nm == null)
 		{
 			return;
 		}
-		int angle = this.plugin.getNightmareNpc().getOrientation();
-		int round = angle >>> 9;
-		if ((angle & 0x100) != 0)
+		LocalPoint nmLp = nm.getLocalLocation();
+		int nmX = nmLp.getX();
+		int nmY = nmLp.getY();
+
+		int offset = (nmX == 6208 || nmX == 7232) ? 2048 : 1792;
+		Polygon lane = new Polygon();
+		if (nmX == 5312 || nmX == 6336)
 		{
-			round++;
+			// facing west -> dashes east across the room
+			lane.addPoint(nmX + offset + 320, nmY + 320);
+			lane.addPoint(nmX - 320, nmY + 320);
+			lane.addPoint(nmX - 320, nmY - 320);
+			lane.addPoint(nmX + offset + 320, nmY - 320);
 		}
-		int directionNum = round & 3;
-		Color color = Color.WHITE;
-		if (this.config.p3Runway() == SpoonNightmareConfig.runwayMode.COLOR)
+		else if (nmX == 7104 || nmX == 8128)
 		{
-			color = this.config.p3RunwayColor();
+			// facing east -> dashes west
+			lane.addPoint(nmX + 320, nmY + 320);
+			lane.addPoint(nmX - offset - 320, nmY + 320);
+			lane.addPoint(nmX - offset - 320, nmY - 320);
+			lane.addPoint(nmX + 320, nmY - 320);
 		}
-		else if (this.config.p3Runway() == SpoonNightmareConfig.runwayMode.RAVE)
+		else if (nmY == 8000 || nmY == 8128 || nmY == 9024 || nmY == 9152)
+		{
+			// facing north -> dashes south
+			lane.addPoint(nmX + 320, nmY + 320);
+			lane.addPoint(nmX - 320, nmY + 320);
+			lane.addPoint(nmX - 320, nmY - offset - 320);
+			lane.addPoint(nmX + 320, nmY - offset - 320);
+		}
+		else if (nmY == 6080 || nmY == 6208 || nmY == 7104 || nmY == 7232)
+		{
+			// facing south -> dashes north
+			lane.addPoint(nmX + 320, nmY + offset + 320);
+			lane.addPoint(nmX - 320, nmY + offset + 320);
+			lane.addPoint(nmX - 320, nmY - 320);
+			lane.addPoint(nmX + 320, nmY - 320);
+		}
+		else
+		{
+			return;
+		}
+
+		Color color = this.config.p3RunwayColor();
+		if (this.config.p3Runway() == SpoonNightmareConfig.runwayMode.RAVE || this.config.p3Runway() == SpoonNightmareConfig.runwayMode.RAVEST)
 		{
 			color = this.plugin.getRaveRunway().get(0);
 		}
-		int index = 0;
-		if (directionNum == 0)
-		{
-			for (int i = 0; i < 15; i++)
-			{
-				index = drawRunwayRow(graphics, bossLoc.getX(), bossLoc.getY() - 1 - i, 1, 0, index, color);
-			}
-		}
-		else if (directionNum == 1)
-		{
-			for (int i = 0; i < 14; i++)
-			{
-				index = drawRunwayRow(graphics, bossLoc.getX() - 1 - i, bossLoc.getY(), 0, -1, index, color);
-			}
-		}
-		else if (directionNum == 2)
-		{
-			for (int i = 0; i < 15; i++)
-			{
-				index = drawRunwayRow(graphics, bossLoc.getX(), bossLoc.getY() + 5 + i, 1, 0, index, color);
-			}
-		}
-		else
-		{
-			for (int i = 0; i < 14; i++)
-			{
-				index = drawRunwayRow(graphics, bossLoc.getX() + 5 + i, bossLoc.getY(), 0, -1, index, color);
-			}
-		}
+		renderLane(graphics, lane, color);
 	}
 
-	private int drawRunwayRow(Graphics2D graphics, int baseX, int baseY, int dx, int dy, int index, Color color)
+	private void renderLane(Graphics2D graphics, Polygon localLane, Color color)
 	{
-		WorldPoint[] tiles = new WorldPoint[5];
-		for (int j = 0; j < 5; j++)
-		{
-			tiles[j] = new WorldPoint(baseX + dx * j, baseY + dy * j, this.client.getPlane());
-		}
-		if (this.config.p3Runway() == SpoonNightmareConfig.runwayMode.RAVEST)
-		{
-			for (WorldPoint tile : tiles)
+		GeneralPath path = new GeneralPath(new Area(localLane));
+		path = Geometry.filterPath(path, (p1, p2) ->
+			Perspective.localToCanvas(this.client, new LocalPoint((int) p1[0], (int) p1[1]), this.client.getPlane()) != null
+				&& Perspective.localToCanvas(this.client, new LocalPoint((int) p2[0], (int) p2[1]), this.client.getPlane()) != null);
+		path = Geometry.transformPath(path, coords -> {
+			Point point = Perspective.localToCanvas(this.client, new LocalPoint((int) coords[0], (int) coords[1]), this.client.getPlane());
+			if (point != null)
 			{
-				drawTile(graphics, tile, this.plugin.getRaveRunway().get(index++), 0, 0, 100);
+				coords[0] = point.getX();
+				coords[1] = point.getY();
 			}
-		}
-		else
-		{
-			for (WorldPoint tile : tiles)
-			{
-				drawTile(graphics, tile, color, 0, 0, 100);
-			}
-			index += 5;
-		}
-		return index;
+		});
+		graphics.setStroke(new BasicStroke(1));
+		graphics.setColor(color);
+		graphics.draw(path);
+		graphics.setColor(new Color(color.getRed(), color.getGreen(), color.getBlue(), 100));
+		graphics.fill(path);
 	}
 
 	private void renderTotems(Graphics2D graphics)
@@ -260,8 +268,7 @@ public class SpoonNightmareOverlay extends Overlay
 			LocalPoint lp = ti.getNpc().getLocalLocation();
 			int scale = this.client.getPlayers().size();
 			int id = this.plugin.getNightmareNpc().getId();
-			boolean phosaniVariant = (id >= NpcID.NIGHTMARE_CHALLENGE_PHASE_01 && id <= NpcID.NIGHTMARE_CHALLENGE_DYING)
-				|| (id >= NpcID.NIGHTMARE_CHALLENGE_PHASE_04 && id <= NpcID.NIGHTMARE_CHALLENGE_WEAK_PHASE_04);
+			boolean phosaniVariant = SpoonNightmarePlugin.isPhosaniVariant(id);
 			int totemHealth = phosaniVariant ? 200 : (scale >= 6 ? scale * 30 : 300);
 			int healthRatio = ti.getNpc().getHealthRatio();
 			double healthRatioDec;
