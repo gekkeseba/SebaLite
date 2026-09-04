@@ -2417,4 +2417,9 @@ public interface Client extends OAuthApi, GameEngine
 
 	@Nullable
 	FileDescriptor getSocketFD();
+
+	/**
+	 * Expand macros such as @mes_hl_blu@, @blu@, etc. with their corresponding values, eg. &lt;col=0000ff&gt;
+	 */
+	String macroExpand(String s);
 }
