@@ -11,10 +11,14 @@ import net.runelite.client.config.Range;
 @ConfigGroup("CoxAdditions")
 public interface SpoonCoxAdditionsConfig extends Config
 {
+	String GROUP_NAME = "CoxAdditions";
+
 	@ConfigSection(name = "Olm", description = "Olm Plugins", position = 0, closedByDefault = true)
 	String olmSection = "olm";
 	@ConfigSection(name = "Rooms", description = "Cox Room Plugins", position = 1, closedByDefault = true)
 	String roomSection = "rooms";
+	@ConfigSection(name = "Loot Tracking", description = "Dry streak tracking for chamber uniques", position = 2, closedByDefault = true)
+	String lootSection = "lootTracking";
 
 	@ConfigItem(keyName = "olmCrippleTimer", name = "Olm Cripple Timer", description = "Adds a timer over olms right hand when crippled", position = 4, section = olmSection)
 	default boolean olmCrippleTimer()
@@ -176,6 +180,12 @@ public interface SpoonCoxAdditionsConfig extends Config
 	default Color vasaCrystalTimerColor()
 	{
 		return Color.WHITE;
+	}
+
+	@ConfigItem(keyName = "dryLootTracking", name = "Dry Loot Tracking", description = "- Tracks your raid points and raid count since your last unique (purple), combined across regular and Challenge Mode raids<br>- Announces the streak in chat after every raid<br>- Tracking persists regardless of this setting; this only toggles the chat announcement", position = 1, section = lootSection)
+	default boolean dryLootTracking()
+	{
+		return true;
 	}
 
 	enum VangsTicksMode
