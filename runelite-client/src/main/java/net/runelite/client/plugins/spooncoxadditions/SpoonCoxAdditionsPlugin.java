@@ -27,17 +27,20 @@ import net.runelite.api.events.GroundObjectSpawned;
 import net.runelite.api.events.NpcChanged;
 import net.runelite.api.events.NpcDespawned;
 import net.runelite.api.events.NpcSpawned;
+import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.NpcID;
 import net.runelite.api.gameval.ObjectID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.kit.KitType;
+import net.runelite.client.chat.ChatMessageManager;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.spooncoxadditions.loottracking.CoxDryLootHandler;
 import net.runelite.client.plugins.spooncoxadditions.overlays.CoxAdditionsOverlay;
 import net.runelite.client.plugins.spooncoxadditions.overlays.MeatTreeCycleOverlay;
 import net.runelite.client.plugins.spooncoxadditions.overlays.ShortcutOverlay;
@@ -69,6 +72,12 @@ public class SpoonCoxAdditionsPlugin extends Plugin
 
 	@Inject
 	private SpoonCoxAdditionsConfig config;
+
+	@Inject
+	private ConfigManager configManager;
+
+	@Inject
+	private ChatMessageManager chatMessageManager;
 
 	@Inject
 	private OverlayManager overlayManager;
@@ -122,6 +131,9 @@ public class SpoonCoxAdditionsPlugin extends Plugin
 	// Raid shortcuts
 	private final List<TileObject> shortcut = new ArrayList<>();
 	private boolean highlightShortcuts;
+
+	// Dry loot (purple) tracking
+	private CoxDryLootHandler dryLootHandler;
 
 	// Tightrope chin-crossing helper
 	public final ArrayList<NPC> ropeNpcs = new ArrayList<>();
@@ -243,11 +255,16 @@ public class SpoonCoxAdditionsPlugin extends Plugin
 		this.rope.clear();
 		this.ropeSpawnDelay = 0;
 		this.shortcut.clear();
+		if (this.dryLootHandler != null)
+		{
+			this.dryLootHandler.reset();
+		}
 	}
 
 	@Override
 	protected void startUp()
 	{
+		this.dryLootHandler = new CoxDryLootHandler(this.client, this.configManager, this.chatMessageManager, this.config);
 		reset();
 		this.highlightShortcuts = this.config.highlightShortcuts();
 		this.overlayManager.add(this.overlay);
@@ -338,6 +355,13 @@ public class SpoonCoxAdditionsPlugin extends Plugin
 		{
 			this.ticksToChop = 6;
 		}
+		this.dryLootHandler.onChatMessage(msg);
+	}
+
+	@Subscribe
+	public void onWidgetLoaded(WidgetLoaded event)
+	{
+		this.dryLootHandler.onWidgetLoaded(event.getGroupId());
 	}
 
 	@Subscribe
